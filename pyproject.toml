@@ -1,0 +1,10 @@
+[project]
+name = "hugging-face-model-card-provenance-seal"
+version = "0.0.1"
+description = "Scaffold: Model Card Provenance Seal (independent Hugging Face lens)"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

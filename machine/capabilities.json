@@ -1,0 +1,12 @@
+{
+  "schema": "glaciereq.repo-capabilities.v1",
+  "repository": "GlacierEQ/hugging-face-model-card-provenance-seal",
+  "capabilities": [
+    {
+      "id": "model-card-provenance-seal",
+      "name": "Model Card Provenance Seal",
+      "status": "SCAFFOLD",
+      "module": "src/model_card_provenance_seal.py"
+    }
+  ]
+}

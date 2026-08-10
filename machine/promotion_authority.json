@@ -1,0 +1,11 @@
+{
+  "schema": "glaciereq.promotion-authority-grant.v1",
+  "repository": "GlacierEQ/hugging-face-model-card-provenance-seal",
+  "source_sha": "0a703c78c389f84a99f96f4d66d74a30d59dce2bb6d29b8edb329e59ee56dc3a",
+  "proof_receipt_digest": "aa393fcfd77bf5fccd40ffc52e01a004a6b4a4895e8f4e5c8b7bf44f30919891",
+  "not_after": 1788948663.550045,
+  "mac": "723f96d0a76f58ef31ad4983670fa896ca15fd9e49d9ee71b0c768320d438ac0",
+  "issuer": "local_operator_promotion_authority",
+  "verified": true,
+  "secret_ref": "src/promotion_authority.py::LOCAL_OPERATOR_SECRET"
+}

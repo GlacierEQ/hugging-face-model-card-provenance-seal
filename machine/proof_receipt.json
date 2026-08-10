@@ -1,0 +1,31 @@
+{
+  "schema": "glaciereq.proof-receipt.v1",
+  "repository": "GlacierEQ/hugging-face-model-card-provenance-seal",
+  "source_sha": "0a703c78c389f84a99f96f4d66d74a30d59dce2bb6d29b8edb329e59ee56dc3a",
+  "proof_id": "elite-hugging-face-model-card-provenance-seal-1786356663",
+  "environment": {
+    "python": "/Users/kcbflux/.local/bin/python3.11",
+    "PYTHONPATH": "/Users/kcbflux/GlacierEQ_Swarm/job-app/repos/hugging-face-model-card-provenance-seal:/Users/kcbflux/GlacierEQ_Swarm/job-app/repos/hugging-face-model-card-provenance-seal/src",
+    "entry": "unittest"
+  },
+  "tests": [
+    "/Users/kcbflux/.local/bin/python3.11 -m unittest discover -s tests -v (x2)"
+  ],
+  "adversarial_tests": [
+    "tests/test_adversarial.py"
+  ],
+  "runtime": {
+    "operate": "scripts/operate.py (x2)",
+    "dual_run_ok": true,
+    "proof_dual_run_ok": true
+  },
+  "result": "PASS",
+  "limitations": [
+    "not production deployed",
+    "reference implementation only"
+  ],
+  "timestamp": "2026-08-10T10:11Z",
+  "artifact_hashes": {
+    "operability_receipt": "42fd8813ed4790515f7d1f918061130ede9ed54073725e36aaa22eb377a1ca82"
+  }
+}
