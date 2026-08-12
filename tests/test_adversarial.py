@@ -1,9 +1,9 @@
 from model_card_provenance_seal import Decision, ModelCardProvenanceSeal, ModelCardProvenanceSealRequest
 
 
-def _evaluate(payload: dict):
+def _evaluate(payload: dict, budget: float = 3.0):
     return ModelCardProvenanceSeal().evaluate(
-        ModelCardProvenanceSealRequest("release-adversarial", payload, budget=3.0)
+        ModelCardProvenanceSealRequest("release-adversarial", payload, budget=budget)
     )
 
 
@@ -33,6 +33,22 @@ def test_absolute_artifact_path_refuses() -> None:
     receipt = _evaluate(payload)
     assert receipt.decision is Decision.REFUSE
     assert "artifact_0_path_invalid" in receipt.reasons
+
+
+def test_artifact_path_must_already_be_string() -> None:
+    payload = _base()
+    payload["artifacts"] = [{"path": 123, "sha256": "b" * 64}]
+    receipt = _evaluate(payload)
+    assert receipt.decision is Decision.REFUSE
+    assert "artifact_0_path_type_invalid" in receipt.reasons
+
+
+def test_artifact_digest_must_already_be_string() -> None:
+    payload = _base()
+    payload["artifacts"] = [{"path": "weights.bin", "sha256": None}]
+    receipt = _evaluate(payload)
+    assert receipt.decision is Decision.REFUSE
+    assert "artifact_weights.bin_sha256_type_invalid" in receipt.reasons
 
 
 def test_negative_artifact_size_refuses() -> None:
@@ -76,3 +92,35 @@ def test_card_key_order_is_canonical() -> None:
     b = _evaluate(second)
     assert a.decision is Decision.ALLOW
     assert a.digest == b.digest
+
+
+def test_artifact_count_is_capped_before_iteration() -> None:
+    payload = _base()
+    payload["artifacts"] = [
+        {"path": f"weights/{i}.bin", "sha256": "b" * 64}
+        for i in range(ModelCardProvenanceSeal.MAX_ARTIFACTS + 1)
+    ]
+    receipt = _evaluate(payload, budget=1000.0)
+    assert receipt.decision is Decision.REFUSE
+    assert "artifacts_over_limit" in receipt.reasons
+    assert receipt.metrics["artifact_count"] == 0
+
+
+def test_card_top_level_fields_are_capped_before_canonicalization() -> None:
+    payload = _base()
+    payload["card"] = {f"field_{i}": i for i in range(ModelCardProvenanceSeal.MAX_CARD_FIELDS + 1)}
+    receipt = _evaluate(payload, budget=1000.0)
+    assert receipt.decision is Decision.REFUSE
+    assert "card_fields_over_limit" in receipt.reasons
+
+
+def test_nested_card_node_limit_stops_unbounded_walk() -> None:
+    payload = _base()
+    payload["card"] = {
+        "license": "apache-2.0",
+        "pipeline_tag": "text-generation",
+        "nested": [0] * (ModelCardProvenanceSeal.MAX_CARD_NODES + 10),
+    }
+    receipt = _evaluate(payload, budget=1000.0)
+    assert receipt.decision is Decision.REFUSE
+    assert any(reason.endswith("node_limit_exceeded") for reason in receipt.reasons)
