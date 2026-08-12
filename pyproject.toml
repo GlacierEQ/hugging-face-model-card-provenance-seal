@@ -1,9 +1,20 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "hugging-face-model-card-provenance-seal"
-version = "0.0.1"
-description = "Scaffold: Model Card Provenance Seal (independent Hugging Face lens)"
+version = "1.0.0"
+description = "Content-addressed provenance seals for immutable model artifacts and model-card metadata"
 requires-python = ">=3.11"
 dependencies = []
+
+[project.scripts]
+model-card-seal = "model_card_provenance_seal:cli"
+
+[tool.setuptools]
+py-modules = ["model_card_provenance_seal"]
+package-dir = {"" = "src"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

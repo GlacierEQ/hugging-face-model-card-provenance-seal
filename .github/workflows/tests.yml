@@ -11,5 +11,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - run: python -m pip install .
       - run: python -m pytest -q
       - run: python scripts/operate.py
+      - name: installed CLI seal and refusal smoke
+        run: |
+          cat > /tmp/valid.json <<'JSON'
+          {"subject_id":"ci-release","budget":2.0,"payload":{"model_id":"glaciereq/demo","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifacts":[{"path":"model.safetensors","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":4096}],"card":{"license":"apache-2.0","pipeline_tag":"text-generation"}}}
+          JSON
+          model-card-seal --input /tmp/valid.json > /tmp/valid.out
+          python -c 'import json; d=json.load(open("/tmp/valid.out")); assert d["decision"] == "ALLOW"; assert len(d["digest"]) == 64; assert d["manifest"]["revision"] == "a"*40'
+          cat > /tmp/invalid.json <<'JSON'
+          {"subject_id":"ci-release","budget":2.0,"payload":{"model_id":"glaciereq/demo","revision":"main","artifacts":[{"path":"model.safetensors","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"card":{"license":"apache-2.0","pipeline_tag":"text-generation"}}}
+          JSON
+          if model-card-seal --input /tmp/invalid.json > /tmp/invalid.out; then exit 1; fi
+          python -c 'import json; d=json.load(open("/tmp/invalid.out")); assert d["decision"] == "REFUSE"; assert "revision_not_immutable_commit" in d["reasons"]'
