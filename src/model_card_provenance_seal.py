@@ -133,6 +133,7 @@ class ModelCardProvenanceSeal:
     MAX_CARD_NODES = 4096
     MAX_CARD_DEPTH = 32
     MAX_STRING_CHARS = 262_144
+    MAX_CLI_INPUT_CHARS = 2_000_000
 
     @staticmethod
     def _normalize_artifact(raw: Any, index: int) -> tuple[dict[str, Any] | None, str | None]:
@@ -144,7 +145,11 @@ class ModelCardProvenanceSeal:
         path = path_raw.strip()
         if not path:
             return None, f"artifact_{index}_path_missing"
-        if path.startswith("/") or "\x00" in path:
+        if (
+            path.startswith("/")
+            or "\\" in path
+            or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path)
+        ):
             return None, f"artifact_{index}_path_invalid"
         normalized_path = posixpath.normpath(path)
         if normalized_path in {".", ".."} or normalized_path.startswith("../"):
@@ -230,8 +235,6 @@ class ModelCardProvenanceSeal:
             reasons.append("card_fields_over_limit")
             card_raw = {}
 
-        # Reject clearly over-budget work before artifact iteration, recursive
-        # card traversal, sorting, or hashing.
         preflight_work_units = (
             self.BASE_WORK_UNITS
             + len(artifacts_raw) * self.ARTIFACT_WORK_UNITS
@@ -304,9 +307,10 @@ class ModelCardProvenanceSeal:
 
         artifacts_root = _digest(artifacts)
         card_digest = _digest(card)
+        # subject_id is deliberately not part of the manifest/seal. A provenance
+        # identity must remain portable across pipelines and callers.
         manifest = {
             "schema": "glaciereq.model-card-provenance.v1",
-            "subject_id": subject_id,
             "model_id": model_id,
             "revision": revision,
             "artifacts": artifacts,
@@ -351,6 +355,7 @@ class ModelCardProvenanceSeal:
             }
         )
         metrics = {
+            "subject_id": str(req.subject_id or ""),
             "artifact_count": len(normalized_manifest.get("artifacts", [])),
             "card_field_count": len(normalized_manifest.get("card", {})),
             "work_units": work_units,
@@ -387,12 +392,26 @@ class ModelCardProvenanceSeal:
 Mechanism = ModelCardProvenanceSeal
 
 
+def _read_cli_input(path: str | None) -> str:
+    limit = ModelCardProvenanceSeal.MAX_CLI_INPUT_CHARS
+    if path:
+        source = Path(path)
+        if source.stat().st_size > limit * 4:
+            raise ValueError("input_too_large")
+        raw = source.read_text(encoding="utf-8")
+    else:
+        raw = sys.stdin.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("input_too_large")
+    return raw
+
+
 def cli(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Seal or verify model-card provenance from JSON.")
     parser.add_argument("--input", "-i", help="request JSON file; defaults to stdin")
     args = parser.parse_args(argv)
     try:
-        raw = Path(args.input).read_text(encoding="utf-8") if args.input else sys.stdin.read()
+        raw = _read_cli_input(args.input)
         data = json.loads(raw)
         if not isinstance(data, Mapping):
             raise ValueError("request JSON must be an object")
