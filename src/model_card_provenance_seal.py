@@ -17,21 +17,58 @@ _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 _REVISION = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
-def _canonical_json(value: Any, *, path: str = "value") -> Any:
-    if value is None or isinstance(value, (str, bool, int)):
+class _JsonCounter:
+    def __init__(self, *, max_nodes: int, max_depth: int, max_string_chars: int) -> None:
+        self.max_nodes = max_nodes
+        self.max_depth = max_depth
+        self.max_string_chars = max_string_chars
+        self.nodes = 0
+
+    def touch(self, path: str, depth: int) -> None:
+        self.nodes += 1
+        if self.nodes > self.max_nodes:
+            raise ValueError(f"{path}_node_limit_exceeded")
+        if depth > self.max_depth:
+            raise ValueError(f"{path}_depth_limit_exceeded")
+
+
+def _canonical_json(
+    value: Any,
+    *,
+    path: str = "value",
+    counter: _JsonCounter | None = None,
+    depth: int = 0,
+) -> Any:
+    counter = counter or _JsonCounter(max_nodes=4096, max_depth=32, max_string_chars=262_144)
+    counter.touch(path, depth)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, str):
+        if len(value) > counter.max_string_chars:
+            raise ValueError(f"{path}_string_too_large")
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"{path}_non_finite")
         return value
     if isinstance(value, list):
-        return [_canonical_json(item, path=f"{path}[{i}]") for i, item in enumerate(value)]
+        return [
+            _canonical_json(item, path=f"{path}[{i}]", counter=counter, depth=depth + 1)
+            for i, item in enumerate(value)
+        ]
     if isinstance(value, Mapping):
         out: dict[str, Any] = {}
         for key, item in value.items():
             if not isinstance(key, str):
                 raise ValueError(f"{path}_key_not_string")
-            out[key] = _canonical_json(item, path=f"{path}.{key}")
+            if len(key) > counter.max_string_chars:
+                raise ValueError(f"{path}_key_too_large")
+            out[key] = _canonical_json(
+                item,
+                path=f"{path}.{key}",
+                counter=counter,
+                depth=depth + 1,
+            )
         return out
     raise ValueError(f"{path}_not_canonical_json")
 
@@ -91,12 +128,20 @@ class ModelCardProvenanceSeal:
     BASE_WORK_UNITS = 1.0
     ARTIFACT_WORK_UNITS = 0.05
     CARD_FIELD_WORK_UNITS = 0.01
+    MAX_ARTIFACTS = 2048
+    MAX_CARD_FIELDS = 256
+    MAX_CARD_NODES = 4096
+    MAX_CARD_DEPTH = 32
+    MAX_STRING_CHARS = 262_144
 
     @staticmethod
     def _normalize_artifact(raw: Any, index: int) -> tuple[dict[str, Any] | None, str | None]:
         if not isinstance(raw, Mapping):
             return None, f"artifact_{index}_not_object"
-        path = str(raw.get("path", "")).strip()
+        path_raw = raw.get("path")
+        if not isinstance(path_raw, str):
+            return None, f"artifact_{index}_path_type_invalid"
+        path = path_raw.strip()
         if not path:
             return None, f"artifact_{index}_path_missing"
         if path.startswith("/") or "\x00" in path:
@@ -104,7 +149,10 @@ class ModelCardProvenanceSeal:
         normalized_path = posixpath.normpath(path)
         if normalized_path in {".", ".."} or normalized_path.startswith("../"):
             return None, f"artifact_{index}_path_escape"
-        sha = str(raw.get("sha256", "")).lower()
+        sha_raw = raw.get("sha256")
+        if not isinstance(sha_raw, str):
+            return None, f"artifact_{normalized_path}_sha256_type_invalid"
+        sha = sha_raw.lower()
         if not _SHA256.fullmatch(sha):
             return None, f"artifact_{normalized_path}_sha256_invalid"
         size = raw.get("size")
@@ -122,7 +170,14 @@ class ModelCardProvenanceSeal:
             return ModelCardProvenanceSeal.DEFAULT_REQUIRED_FIELDS
         if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
             raise ValueError("required_card_fields_invalid")
-        fields = tuple(sorted({str(item).strip() for item in raw if str(item).strip()}))
+        values: set[str] = set()
+        for item in raw:
+            if not isinstance(item, str):
+                raise ValueError("required_card_fields_type_invalid")
+            item = item.strip()
+            if item:
+                values.add(item)
+        fields = tuple(sorted(values))
         if not fields:
             raise ValueError("required_card_fields_empty")
         return fields
@@ -149,11 +204,13 @@ class ModelCardProvenanceSeal:
         if unknown:
             reasons.append("payload_keys_unknown:" + ",".join(sorted(unknown)))
 
-        model_id = str(req.payload.get("model_id", "")).strip()
+        model_id_raw = req.payload.get("model_id")
+        model_id = model_id_raw.strip() if isinstance(model_id_raw, str) else ""
         if not model_id or "/" not in model_id:
             reasons.append("model_id_invalid")
 
-        revision = str(req.payload.get("revision", "")).lower()
+        revision_raw = req.payload.get("revision")
+        revision = revision_raw.lower() if isinstance(revision_raw, str) else ""
         if not _REVISION.fullmatch(revision):
             reasons.append("revision_not_immutable_commit")
 
@@ -161,6 +218,34 @@ class ModelCardProvenanceSeal:
         if not isinstance(artifacts_raw, list) or not artifacts_raw:
             reasons.append("artifacts_missing")
             artifacts_raw = []
+        elif len(artifacts_raw) > self.MAX_ARTIFACTS:
+            reasons.append("artifacts_over_limit")
+            artifacts_raw = []
+
+        card_raw = req.payload.get("card")
+        if not isinstance(card_raw, Mapping):
+            reasons.append("card_missing")
+            card_raw = {}
+        elif len(card_raw) > self.MAX_CARD_FIELDS:
+            reasons.append("card_fields_over_limit")
+            card_raw = {}
+
+        # Reject clearly over-budget work before artifact iteration, recursive
+        # card traversal, sorting, or hashing.
+        preflight_work_units = (
+            self.BASE_WORK_UNITS
+            + len(artifacts_raw) * self.ARTIFACT_WORK_UNITS
+            + len(card_raw) * self.CARD_FIELD_WORK_UNITS
+        )
+        if preflight_work_units > budget:
+            reasons.append("work_budget_exceeded")
+            return self._receipt(
+                req,
+                Decision.REFUSE,
+                reasons,
+                work_units=preflight_work_units,
+            )
+
         artifacts: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
         for index, raw in enumerate(artifacts_raw):
@@ -176,16 +261,19 @@ class ModelCardProvenanceSeal:
             artifacts.append(artifact)
         artifacts.sort(key=lambda item: item["path"])
 
-        card_raw = req.payload.get("card")
-        if not isinstance(card_raw, Mapping):
-            reasons.append("card_missing")
-            card: dict[str, Any] = {}
-        else:
-            try:
-                card = _canonical_json(card_raw, path="card")
-            except ValueError as exc:
-                reasons.append(str(exc))
-                card = {}
+        try:
+            card = _canonical_json(
+                card_raw,
+                path="card",
+                counter=_JsonCounter(
+                    max_nodes=self.MAX_CARD_NODES,
+                    max_depth=self.MAX_CARD_DEPTH,
+                    max_string_chars=self.MAX_STRING_CHARS,
+                ),
+            )
+        except ValueError as exc:
+            reasons.append(str(exc))
+            card = {}
 
         try:
             required_fields = self._required_fields(req.payload.get("required_card_fields"))
@@ -196,18 +284,22 @@ class ModelCardProvenanceSeal:
         if missing_fields:
             reasons.append("card_required_fields_missing:" + ",".join(missing_fields))
 
-        expected_seal = req.payload.get("expected_seal")
-        if expected_seal is not None:
-            expected_seal = str(expected_seal).lower()
-            if not _SHA256.fullmatch(expected_seal):
-                reasons.append("expected_seal_invalid")
+        expected_seal_raw = req.payload.get("expected_seal")
+        expected_seal: str | None = None
+        if expected_seal_raw is not None:
+            if not isinstance(expected_seal_raw, str):
+                reasons.append("expected_seal_type_invalid")
+            else:
+                expected_seal = expected_seal_raw.lower()
+                if not _SHA256.fullmatch(expected_seal):
+                    reasons.append("expected_seal_invalid")
 
         work_units = (
             self.BASE_WORK_UNITS
             + len(artifacts) * self.ARTIFACT_WORK_UNITS
             + len(card) * self.CARD_FIELD_WORK_UNITS
         )
-        if work_units > budget:
+        if work_units > budget and "work_budget_exceeded" not in reasons:
             reasons.append("work_budget_exceeded")
 
         artifacts_root = _digest(artifacts)
